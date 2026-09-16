@@ -71,7 +71,8 @@ def grid_search(bars: pd.DataFrame, symbol: str, base: StrategyConfig, risk: Ris
 def walk_forward(bars: pd.DataFrame, symbol: str, base: StrategyConfig, risk: RiskConfig, costs: CostModel,
                  grid: dict[str, Iterable[Any]], train_months: int = 12, test_months: int = 3,
                  objective: str = "t_stat_r", min_trades: int = 20) -> tuple[list[Fold], pd.DataFrame]:
-    """Anchored-window walk-forward: fit on train, evaluate untouched on the following test window.
+    """Rolling-window walk-forward: fit on `train_months`, evaluate untouched on the following
+    `test_months`, then roll both windows forward by `test_months`.
 
     Returns the folds and the concatenated out-of-sample trade frame.
     """

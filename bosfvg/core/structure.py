@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -107,24 +108,28 @@ class StructureState:
         self.events = [] if self.events is None else self.events
         self.swings = [] if self.swings is None else self.swings
 
-    def _confirm_swings(self, high: np.ndarray, low: np.ndarray, i: int) -> None:
-        """Register swings whose confirmation index is exactly i."""
+    def _confirm_swings(self, high: Sequence[float], low: Sequence[float], i: int) -> None:
+        """Register swings whose confirmation index is exactly i. Only touches a 2*lookback+1 window."""
         j = i - self.lookback
         if j < self.lookback:
             return
         lb = self.lookback
         h, l = high[j], low[j]
-        if (h >= high[j - lb : j]).all() and (h > high[j + 1 : j + lb + 1]).all():
+        left_h, right_h = high[j - lb : j], high[j + 1 : j + lb + 1]
+        if all(h >= x for x in left_h) and all(h > x for x in right_h):
             s = Swing(j, i, float(h), True)
             self.swings.append(s)
             self.prev_high, self.last_high = self.last_high, s
-        if (l <= low[j - lb : j]).all() and (l < low[j + 1 : j + lb + 1]).all():
+        left_l, right_l = low[j - lb : j], low[j + 1 : j + lb + 1]
+        if all(l <= x for x in left_l) and all(l < x for x in right_l):
             s = Swing(j, i, float(l), False)
             self.swings.append(s)
             self.prev_low, self.last_low = self.last_low, s
 
-    def step(self, high: np.ndarray, low: np.ndarray, close: np.ndarray, i: int) -> StructureEvent | None:
-        """Process candle i. Returns a structure event if candle i's close broke a level."""
+    def step(self, high: Sequence[float], low: Sequence[float], close: Sequence[float], i: int) -> StructureEvent | None:
+        """Process candle i. Returns a structure event if candle i's close broke a level.
+
+        `high/low/close` may be lists or arrays; only indices <= i are ever read."""
         self._confirm_swings(high, low, i)
         c = close[i]
         event: StructureEvent | None = None

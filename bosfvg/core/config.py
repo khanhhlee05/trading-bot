@@ -32,6 +32,7 @@ class StrategyConfig:
     fvg_impulse_forward_bars: int = 2  # gaps formed up to N HTF bars after the break still count as "the impulse"
     fvg_min_size_frac: float = 0.0005  # gap height as a fraction of price; below this it is noise
     first_touch_only: bool = True      # only the first LTF pullback into a gap can trigger
+    fvg_max_age_bars: int = 400        # stop tracking a gap after this many bars of its own timeframe
 
     # rejection candle (LTF)
     wick_ratio: float = 0.4          # entry-side wick / candle range must be >= this

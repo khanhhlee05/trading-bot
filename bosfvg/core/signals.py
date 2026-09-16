@@ -111,8 +111,8 @@ class SignalEngine:
         self.symbol = symbol
         self.st = EngineState()
         self.structure = StructureState(lookback=cfg.swing_lookback)
-        self.htf_fvg = FVGState()
-        self.ltf_fvg = FVGState()
+        self.htf_fvg = FVGState(max_age=cfg.fvg_max_age_bars)
+        self.ltf_fvg = FVGState(max_age=cfg.fvg_max_age_bars)
         self.arms: list[Arm] = []
         self.signals: list[Signal] = []
         self.pending: _Pending | None = None
@@ -131,11 +131,8 @@ class SignalEngine:
         st.htf_low.append(l)
         st.htf_close.append(c)
         i = len(st.htf_close) - 1
-        high = np.asarray(st.htf_high)
-        low = np.asarray(st.htf_low)
-        close = np.asarray(st.htf_close)
-        event = self.structure.step(high, low, close, i)
-        gap = self.htf_fvg.step(high, low, close, i)
+        event = self.structure.step(st.htf_high, st.htf_low, st.htf_close, i)
+        gap = self.htf_fvg.step(st.htf_high, st.htf_low, st.htf_close, i)
         if gap is not None:
             self._gap_known_time[("htf", gap.id)] = bar_close_time(t, self.cfg.htf_minutes)
         self.arms = [a for a in self.arms if a.expires_after_htf_index >= i]
@@ -166,10 +163,7 @@ class SignalEngine:
         close_time = bar_close_time(t, self.cfg.ltf_minutes)
 
         if self.cfg.fvg_source == "ltf":
-            high = np.asarray(st.ltf_high)
-            low = np.asarray(st.ltf_low)
-            close = np.asarray(st.ltf_close)
-            gap = self.ltf_fvg.step(high, low, close, i)
+            gap = self.ltf_fvg.step(st.ltf_high, st.ltf_low, st.ltf_close, i)
             if gap is not None:
                 self._gap_known_time[("ltf", gap.id)] = close_time
 

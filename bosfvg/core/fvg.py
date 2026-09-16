@@ -13,6 +13,7 @@ Mitigation states, in order:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -32,6 +33,7 @@ class FVG:
     touched_index: int | None = None
     filled_index: int | None = None
     invalid_index: int | None = None
+    expired_index: int | None = None   # dropped from tracking for age, not by price action
     id: int = field(default=-1)
 
     @property
@@ -52,11 +54,12 @@ class FVG:
         return self.touched_index is None or self.touched_index > i
 
     def is_live_as_of(self, i: int) -> bool:
-        """Known and not invalidated by candle i (touching is fine; closing through is not)."""
-        return self.index <= i and (self.invalid_index is None or self.invalid_index > i)
+        """Known, not invalidated by candle i (touching is fine; closing through is not), not expired."""
+        return (self.index <= i and (self.invalid_index is None or self.invalid_index > i)
+                and (self.expired_index is None or self.expired_index > i))
 
 
-def _gap_from_candles(i: int, high: np.ndarray, low: np.ndarray) -> FVG | None:
+def _gap_from_candles(i: int, high: Sequence[float], low: Sequence[float]) -> FVG | None:
     h1, l1 = high[i - 2], low[i - 2]
     h2, l2 = high[i - 1], low[i - 1]
     h3, l3 = high[i], low[i]
@@ -67,7 +70,7 @@ def _gap_from_candles(i: int, high: np.ndarray, low: np.ndarray) -> FVG | None:
     return None
 
 
-def _update_mitigation(gap: FVG, k: int, high: np.ndarray, low: np.ndarray, close: np.ndarray) -> None:
+def _update_mitigation(gap: FVG, k: int, high: Sequence[float], low: Sequence[float], close: Sequence[float]) -> None:
     """Apply candle k (> gap.index) to the gap's mitigation state."""
     h, l, c = high[k], low[k], close[k]
     if gap.direction is Direction.BULLISH:
@@ -89,16 +92,30 @@ def _update_mitigation(gap: FVG, k: int, high: np.ndarray, low: np.ndarray, clos
 class FVGState:
     """Incremental FVG tracker. Feed candles in order via `step`."""
 
-    def __init__(self, min_size: float = 0.0) -> None:
+    def __init__(self, min_size: float = 0.0, max_age: int | None = None) -> None:
+        """`max_age`: a gap older than this many candles stops being tracked. Bounds the work per
+        candle on long series; the signal engine never trades gaps outside its arm window anyway."""
         self.gaps: list[FVG] = []
+        self._live: list[FVG] = []
         self.min_size = min_size
+        self.max_age = max_age
         self._next_id = 0
 
-    def step(self, high: np.ndarray, low: np.ndarray, close: np.ndarray, i: int) -> FVG | None:
-        """Update mitigation for existing gaps with candle i, then detect a new gap ending at i."""
-        for gap in self.gaps:
-            if gap.invalid_index is None and gap.index < i:
+    def step(self, high: Sequence[float], low: Sequence[float], close: Sequence[float], i: int) -> FVG | None:
+        """Update mitigation for existing gaps with candle i, then detect a new gap ending at i.
+
+        Only the live (not yet invalidated) gaps are scanned; dead gaps are moved out of the
+        hot list so long series stay linear."""
+        still_live = []
+        for gap in self._live:
+            if self.max_age is not None and i - gap.index > self.max_age:
+                gap.expired_index = i
+                continue
+            if gap.index < i:
                 _update_mitigation(gap, i, high, low, close)
+            if gap.invalid_index is None:
+                still_live.append(gap)
+        self._live = still_live
         if i < 2:
             return None
         gap = _gap_from_candles(i, high, low)
@@ -107,11 +124,11 @@ class FVGState:
         gap.id = self._next_id
         self._next_id += 1
         self.gaps.append(gap)
+        self._live.append(gap)
         return gap
 
     def live_gaps(self, i: int, direction: Direction | None = None) -> list[FVG]:
-        out = [g for g in self.gaps if g.is_live_as_of(i) and (direction is None or g.direction is direction)]
-        return out
+        return [g for g in self._live if g.is_live_as_of(i) and (direction is None or g.direction is direction)]
 
 
 def detect_fvgs(df: pd.DataFrame, min_size: float = 0.0) -> list[FVG]:

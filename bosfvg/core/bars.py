@@ -11,7 +11,8 @@ Everything downstream assumes these invariants; `ensure_bars` enforces them once
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import time, timedelta
+from datetime import time
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -64,28 +65,33 @@ def resample_bars(df: pd.DataFrame, minutes: int, session_open: time = RTH_OPEN)
     """Aggregate finer bars into `minutes`-wide bars aligned to the session open.
 
     Alignment matters: a 60-minute bar must run 9:30-10:30, not 9:00-10:00, or the first
-    hour's structure is wrong. Bars never span a session boundary.
+    hour's structure is wrong. Bars never span a session boundary because bins are computed
+    per day from that day's session open.
     """
     if len(df) == 0:
         return ensure_bars(df)
-    offset = pd.Timedelta(hours=session_open.hour, minutes=session_open.minute)
-    parts = []
-    for _, day in df.groupby(df.index.normalize()):
-        agg = day.resample(
-            f"{minutes}min",
-            origin=day.index[0].normalize() + offset,
-            label="left",
-            closed="left",
-        ).agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
-        parts.append(agg.dropna(subset=["open"]))
-    return ensure_bars(pd.concat(parts))
+    day = df.index.normalize()
+    open_offset = pd.Timedelta(hours=session_open.hour, minutes=session_open.minute)
+    since_open = (df.index - (day + open_offset)).total_seconds() // 60
+    bin_no = np.floor(since_open / minutes).astype("int64")
+    bin_start = day + open_offset + pd.to_timedelta(bin_no * minutes, unit="m")
+    agg = df.groupby(bin_start, sort=True).agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+    )
+    agg.index.name = "time"
+    return ensure_bars(agg)
 
 
+@lru_cache(maxsize=65536)
 def bar_close_time(open_time: pd.Timestamp, minutes: int, session_close: time = RTH_CLOSE) -> pd.Timestamp:
-    """When a bar that opened at `open_time` is known to be complete."""
-    close = open_time + timedelta(minutes=minutes)
-    eod = open_time.normalize() + pd.Timedelta(hours=session_close.hour, minutes=session_close.minute)
-    return min(close, eod)
+    """When a bar that opened at `open_time` is known to be complete (capped at the session close)."""
+    close = open_time + _MINUTE_DELTAS.setdefault(minutes, pd.Timedelta(minutes=minutes))
+    if close.time() > session_close or close.date() != open_time.date():
+        return open_time.replace(hour=session_close.hour, minute=session_close.minute, second=0, microsecond=0, nanosecond=0)
+    return close
+
+
+_MINUTE_DELTAS: dict[int, pd.Timedelta] = {}
 
 
 @dataclass(frozen=True)
