@@ -116,3 +116,31 @@ def test_state_file_resume_and_unknown_position_flatten(tmp_path):
     trader = LiveTrader("SPY", CFG, RiskConfig(), CostModel(), broker, tmp_path, dry_run=False, now_fn=lambda: day + pd.Timedelta(hours=9, minutes=30))
     trader.bootstrap(bars[bars.index < day])
     assert broker.positions() == []
+
+
+def test_partial_bar_is_not_fed_until_last_minute_arrives(tmp_path):
+    from bosfvg.core.bars import NY_TZ
+    from tests.conftest import make_bars
+
+    day = pd.Timestamp("2024-03-04", tz=NY_TZ)
+    broker = FakeBroker()
+    clock = {"now": day + pd.Timedelta(hours=9, minutes=30)}
+    trader = LiveTrader("SPY", CFG, RiskConfig(), CostModel(), broker, tmp_path, dry_run=True,
+                        now_fn=lambda: clock["now"], sleep_fn=lambda s: None, late_grace_seconds=45)
+    minutes = make_bars([(100, 101, 99, 100.5)] * 5, start="2024-03-04 09:30", minutes=1)
+    # 9:35:04 with only 4 of 5 minute bars: the 9:30 five-minute bar must NOT be fed
+    clock["now"] = day + pd.Timedelta(hours=9, minutes=35, seconds=4)
+    broker.bars["SPY"] = minutes.iloc[:4]
+    trader.cycle()
+    assert trader.last_ltf_fed is None
+    # the 9:34 minute bar arrives: now it is fed
+    broker.bars["SPY"] = minutes
+    trader.cycle()
+    assert trader.last_ltf_fed == day + pd.Timedelta(hours=9, minutes=30)
+    # a genuinely missing final minute is accepted after the late grace
+    trader2 = LiveTrader("SPY", CFG, RiskConfig(), CostModel(), FakeBroker(), tmp_path / "b", dry_run=True,
+                         now_fn=lambda: clock["now"], sleep_fn=lambda s: None, late_grace_seconds=45)
+    trader2.broker.bars["SPY"] = minutes.iloc[:4]
+    clock["now"] = day + pd.Timedelta(hours=9, minutes=35, seconds=50)
+    trader2.cycle()
+    assert trader2.last_ltf_fed == day + pd.Timedelta(hours=9, minutes=30)

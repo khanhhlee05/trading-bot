@@ -92,3 +92,12 @@ def test_option_mode_sizes_by_premium_loss():
     stopped = t[t["exit_reason"] == "stop"]
     if len(stopped):
         assert (stopped["pnl_r"].between(-1.6, -0.4)).all()
+
+
+def test_trade_record_matches_journal_columns():
+    from dataclasses import fields
+
+    from bosfvg.runner.journal import TRADE_COLUMNS, TradeRecord
+
+    names = [f.name for f in fields(TradeRecord) if f.name != "extra"]
+    assert names == TRADE_COLUMNS

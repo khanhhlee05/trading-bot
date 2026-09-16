@@ -171,7 +171,7 @@ class SignalEngine:
         if self.pending is not None:
             p = self.pending
             self.pending = None
-            if self._confirms(p, candle):
+            if self._confirms(p, candle) and self._within_entry_window(close_time):
                 sig = self._build_signal(p.gap, p.arm, candle, close_time, p.wick_ratio, p.close_pos, entry=c)
                 if sig is not None:
                     return self._emit(sig)

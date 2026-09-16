@@ -69,6 +69,7 @@ class LiveTrader:
         live_feed: str = "iex",
         poll_seconds: float = 5.0,
         bar_grace_seconds: float = 3.0,
+        late_grace_seconds: float = 45.0,
         now_fn: Callable[[], pd.Timestamp] | None = None,
         sleep_fn: Callable[[float], None] = _time.sleep,
         selection: SelectionCriteria | None = None,
@@ -89,6 +90,7 @@ class LiveTrader:
         self.live_feed = live_feed
         self.poll_seconds = poll_seconds
         self.grace = pd.Timedelta(seconds=bar_grace_seconds)
+        self.late_grace = pd.Timedelta(seconds=late_grace_seconds)
         self.now_fn = now_fn or (lambda: pd.Timestamp.now(tz=NY_TZ))
         self.sleep_fn = sleep_fn
         self.selection = selection or SelectionCriteria(target_delta=risk.target_delta, min_dte=risk.min_dte,
@@ -144,12 +146,30 @@ class LiveTrader:
 
     # ------------------------------------------------------------------ bar feeding
 
+    def _closed_mask(self, bars: pd.DataFrame, minutes: int, minute_bars: pd.DataFrame, up_to: pd.Timestamp) -> list[bool]:
+        """A resampled bar counts as closed only when its close time has passed AND either its
+        final 1-minute bar has arrived from the API or `late_grace` has elapsed since the close.
+
+        Without this, a poll that lands a second after the close, before the data API has the
+        last minute, would feed a partial bar as complete and the engine would see highs/lows
+        the backtester never saw."""
+        have = set(minute_bars.index)
+        out = []
+        for t in bars.index:
+            close = bar_close_time(t, minutes)
+            if close > up_to:
+                out.append(False)
+                continue
+            last_minute = close - pd.Timedelta(minutes=1)
+            out.append(last_minute in have or up_to >= close + self.late_grace)
+        return out
+
     def _feed_closed_bars(self, minute_bars: pd.DataFrame, up_to: pd.Timestamp) -> list[Signal]:
         """Feed every LTF/HTF bar that has closed by `up_to` and hasn't been fed, in wall-clock order."""
         ltf = resample_bars(minute_bars, self.cfg.ltf_minutes, self.cfg.session_start)
         htf = resample_bars(minute_bars, self.cfg.htf_minutes, self.cfg.session_start)
-        ltf = ltf[[bar_close_time(t, self.cfg.ltf_minutes) <= up_to for t in ltf.index]]
-        htf = htf[[bar_close_time(t, self.cfg.htf_minutes) <= up_to for t in htf.index]]
+        ltf = ltf[self._closed_mask(ltf, self.cfg.ltf_minutes, minute_bars, up_to)]
+        htf = htf[self._closed_mask(htf, self.cfg.htf_minutes, minute_bars, up_to)]
         if self.last_ltf_fed is not None:
             ltf = ltf[ltf.index > self.last_ltf_fed]
         if self.last_htf_fed is not None:
@@ -333,9 +353,9 @@ class LiveTrader:
         day = now.normalize()
         flat_dt = day + pd.Timedelta(hours=self.cfg.flat_time.hour, minutes=self.cfg.flat_time.minute)
         reason = None
-        if d == 1 and px <= pos.stop or d == -1 and px >= pos.stop:
+        if (d == 1 and px <= pos.stop) or (d == -1 and px >= pos.stop):
             reason = "stop"
-        elif d == 1 and px >= pos.target or d == -1 and px <= pos.target:
+        elif (d == 1 and px >= pos.target) or (d == -1 and px <= pos.target):
             reason = "target"
         elif now >= flat_dt:
             reason = "time"
